@@ -1,0 +1,179 @@
+#include "rtpc.h"
+#include <stdio.h>
+#include <math.h>
+
+//
+// Calculate slope of ADC vs distance along track (new in 2014, NAB)
+//
+// Input:
+// smin/smax  = distance from vertex along helix of first/last hits on track
+// npt        = number of used hits on the track
+// distance[npts] = distance from verex along helix for each hit
+// charge[npts]   = charge for each hit
+//
+//
+// Output:  (via global trackv[] members)
+// Rxy   = correlation parameter 
+// alpha = slope 
+// beta  = y-intercept
+//
+
+
+// charge will be divided into bins along track path length:
+#define __NPATHBINS__ 12
+//#define __NPATHBINS__ 7
+
+// minimum number of occupied path bins for calculations:
+#define __NMINBINS__ 4
+
+void qslope(const int tracknum,const float smin,const float smax,
+            const int npt,
+            const float distance[MAX_HITS_ON_CHAIN],
+            const float charge[MAX_HITS_ON_CHAIN],
+            const float adcfrac)
+{
+  // initialize globals:
+  trackv[tracknum].Rxy = -999999;
+  trackv[tracknum].alpha = -999999;
+  trackv[tracknum].beta = -999999;
+  trackv[tracknum].chisq = -999999;
+
+  const float totlength = smax - smin;
+  const float binsize = totlength / __NPATHBINS__;
+ 
+//  const int nignore = 0;
+  const int nignore = adcfrac*npt>0 ? adcfrac*npt : 1;
+
+  int bin,jj;
+  int nhitsbin[__NPATHBINS__]={};
+  float qbin[__NPATHBINS__]={};
+  float distbin[__NPATHBINS__]={};
+  float edistbin[__NPATHBINS__]={};
+  float tdcbin[__NPATHBINS__]={};
+
+  // sum charge in bins of path length:  //////////////////////////
+  for (jj=0; jj<npt-nignore; jj++)
+  {
+      if (fabs(distance[jj]-smax)<1e-5) bin = __NPATHBINS__-1;
+      else                              bin = (distance[jj]-smin)/binsize;
+      if (bin<0 || bin>=__NPATHBINS__)
+      {
+          fprintf(stderr,"SUMTRACKQ ERROR:  badbin %f %f %f\n",smin,smax,distance[jj]);
+      }
+      else
+      {
+          nhitsbin[bin]++;
+          qbin[bin] += charge[jj];
+          distbin[bin] += distance[jj];
+      }
+  }
+  
+  // count filled bins: 
+  int nfilledbins=0;
+  for (jj=0; jj<__NPATHBINS__; jj++)
+      if (nhitsbin[jj]>0) nfilledbins++;
+  if (nfilledbins < __NMINBINS__) return;
+
+  // get averages for each bin: ///////////////////////////////////
+  for (jj=0; jj<__NPATHBINS__; jj++) 
+  {
+      if (nhitsbin[jj]<=0) continue;
+      distbin[jj] /= nhitsbin[jj];
+      qbin[jj] /= nhitsbin[jj];
+  }
+
+  // get std deviations: /////////////////////////////////////////
+  for (jj=0; jj<npt-nignore; jj++)
+  {
+      if (fabs(distance[jj]-smax)<1e-5) bin = __NPATHBINS__-1;
+      else                              bin = (distance[jj]-smin)/binsize;
+      if (bin<0 || bin>=__NPATHBINS__)
+      {
+          fprintf(stderr,"SUMTRACKQ ERROR:  badbin %f %f %f\n",smin,smax,distance[jj]);
+      }
+      else
+      {
+          edistbin[bin] += pow(distance[jj] - distbin[bin] ,2);
+      }
+  }
+  for (jj=0; jj<__NPATHBINS__; jj++) 
+  {
+      if (nhitsbin[jj]<=0) continue;
+      edistbin[jj] = sqrt( edistbin[jj] / (nhitsbin[jj]-1) );
+  }
+ 
+
+  static FILE* slopfile=NULL;
+  if (!slopfile) slopfile=fopen("slopfile.txt","w");
+  fprintf(slopfile,"AAAAA %d\n",clas_global_eid);
+  for (jj=0; jj<__NPATHBINS__; jj++)
+  {
+      fprintf(slopfile,"%5d %12.3f %12.3f\n",nhitsbin[jj],distbin[jj],qbin[jj]);
+  }
+
+
+  // Simple linear regression: //////////////////////////////////
+
+  // compute means:
+  float xmean=0,ymean=0,x2mean=0,y2mean=0,xymean=0;
+  for (jj=0; jj<__NPATHBINS__; jj++)
+  {
+      if (nhitsbin[jj]<=0) continue;
+      ymean += qbin[jj];
+      xmean += distbin[jj];
+      y2mean += pow(qbin[jj],2);
+      x2mean += pow(distbin[jj],2);
+      xymean += qbin[jj]*distbin[jj];
+  }
+
+  xmean /= nfilledbins; 
+  ymean /= nfilledbins;
+  x2mean /= nfilledbins; 
+  y2mean /= nfilledbins;
+  xymean /= nfilledbins;
+
+  // compute standard deviations:
+  float ystddev=0,xstddev=0;
+  for (jj=0; jj<__NPATHBINS__; jj++)
+  {
+      if (nhitsbin[jj]<=0) continue;
+      xstddev += pow(distbin[jj]-xmean,2);
+      ystddev += pow(qbin[jj]-ymean,2);
+  }
+  xstddev = sqrt( xstddev / (nfilledbins-1) );
+  ystddev = sqrt( ystddev / (nfilledbins-1) );
+
+
+  // degree of linear correlation, in range (-1,1):
+  const float Rxy = (xymean - xmean*ymean) / 
+      sqrt( (x2mean-xmean*xmean) * (y2mean-ymean*ymean) );
+
+  // linear fit parameters:
+  const float beta = Rxy * ystddev / xstddev; // slope
+  const float alpha = ymean - beta * xmean; // y-intercept
+
+  // calculate chi-square
+  float linreg;
+  float chisq = 0;
+  for (jj=0; jj<__NPATHBINS__; jj++)
+  {
+      if (nhitsbin[jj]<=0) continue;
+      linreg = alpha + beta * distbin[jj];
+      chisq += pow(qbin[jj]-linreg,2) / linreg;
+  }
+  chisq /= (nfilledbins-2);
+
+
+
+  // save in globals:
+  trackv[tracknum].Rxy = Rxy;
+  trackv[tracknum].alpha = alpha;
+  trackv[tracknum].beta = beta;
+  trackv[tracknum].chisq = chisq;
+
+  fprintf(slopfile,"%12.4f %12.4f %12.4f %12.4f\n",alpha,beta,Rxy,chisq);
+
+}
+
+
+

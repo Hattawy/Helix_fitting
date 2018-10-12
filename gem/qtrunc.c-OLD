@@ -1,0 +1,182 @@
+#include "rtpc.h"
+#include <stdio.h>
+
+//
+// Calculate a few truncated dedx numerators (new in 2014, NAB)
+//
+// Input:
+// smin/smax  = distance from vertex along helix of first/last hits on track
+// npt        = number of used hits on the track
+// distance[npts] = distance from verex along helix for each hit
+// charge[npts]   = charge for each hit
+//
+// Output:  (via global trackv[] members)
+// qtruncA  = total track charge ignoring large ADCs
+// qtruncL  = total track charge ignoring ends of track length
+// qtruncAL = total track charge ignoring both
+//
+// NOTE:  This will leave the input arrays reordered by increasing charge
+//
+
+float qtrunc(const int tracknum,const float smin,const float smax,
+            const int npt,
+            float distance[MAX_HITS_ON_CHAIN],
+            float charge[MAX_HITS_ON_CHAIN])
+{
+  // initialize globals:
+  trackv[tracknum].qtruncA=0;
+  trackv[tracknum].qtruncL=0;
+  trackv[tracknum].qtruncAL=0;
+
+  // fractions of hits to ignore:
+  const float adcfrac=0.30;  // highest-ADC hits
+  const float lenfrac=0.10;  // hits at ends of track
+  const float adcfrac2=0.10; // highest-ADC hits when combined with lenfrac
+
+  float tmp;
+  int jj,swapped,nignore,nignore2;
+
+  if (npt < 4) return 0;
+
+  //////////////// ADC-truncated track charge ////////////////////////////
+  {
+      // bubble-sort hits by increasing charge:
+      swapped=1;
+      while (swapped)
+      {
+          swapped=0;
+          for (jj=1; jj<npt; jj++)
+          {
+              if (charge[jj] < charge[jj-1])
+              {
+                  tmp=charge[jj];
+                  charge[jj]=charge[jj-1];
+                  charge[jj-1]=tmp;
+
+                  tmp=distance[jj];
+                  distance[jj]=distance[jj-1];
+                  distance[jj-1]=tmp;
+
+                  swapped=1;
+              }
+          }
+      }
+      // calculated track charge, ignoring hits with highest charge:
+      nignore = adcfrac * npt;
+      if (nignore==0) nignore=1;
+      for (jj=0; jj<npt-nignore; jj++)
+      {
+          trackv[tracknum].qtruncA += charge[jj];
+      }
+  }
+
+
+  ///////////// Path-length-truncated track charge ////////////////////////
+  {
+      // bubble-sort hits by increasing distance along track:
+      swapped=1;
+      while (swapped)
+      {
+          swapped=0;
+          for (jj=1; jj<npt; jj++)
+          {
+              if (distance[jj] < distance[jj-1])
+              {
+                  tmp=charge[jj];
+                  charge[jj]=charge[jj-1];
+                  charge[jj-1]=tmp;
+
+                  tmp=distance[jj];
+                  distance[jj]=distance[jj-1];
+                  distance[jj-1]=tmp;
+
+                  swapped=1;
+              }
+          }
+      }
+      // calculated track charge, ignoring ends of track based on hit fraction:
+      nignore = lenfrac * npt;
+      if (nignore==0) nignore=1;
+      for (jj=nignore; jj<npt-nignore; jj++)
+      {
+          trackv[tracknum].qtruncL += charge[jj];
+      }
+     
+/*
+      // calculated track charge, ignoring ends of track based on path length fraction:
+      const float smin2 = smin + (smax-smin)*lenfrac;
+      const float smax2 = smax - (smax-smin)*lenfrac;
+      for (jj=0; jj<npt; jj++) 
+      {
+          if (distance[jj] < smin2) continue;
+          if (distance[jj] > smax2) break;
+          trackv[tracknum].qtruncL2 += charge[jj];
+      }
+*/
+  }
+
+  //////////// ADC- and Path-Length- truncated track charge /////////////////
+  {
+      // NOTE, this relies on already being sorted by distance
+      // bubble-sort by increasing ADC only in middle of track:
+      swapped=1;
+      while (swapped)
+      {
+          swapped=0;
+          for (jj=nignore+1; jj<npt-nignore; jj++)
+          {
+              if (charge[jj] < charge[jj-1])
+              {
+                  tmp=charge[jj];
+                  charge[jj]=charge[jj-1];
+                  charge[jj-1]=tmp;
+                  
+                  tmp=distance[jj];
+                  distance[jj]=distance[jj-1];
+                  distance[jj-1]=tmp;
+
+                  swapped=1;
+              }
+          }
+      }
+      // calculate track charge, ignore ends of track and high-ADCs:
+      nignore2 = adcfrac2 * (npt-nignore*2);
+
+      for (jj=nignore; jj<npt-nignore-nignore2; jj++)
+      {
+          trackv[tracknum].qtruncAL += charge[jj];
+      }
+  }
+
+
+
+
+  /////////////// Leave Arrays Sorted by Charge ////////////////////
+  {
+      swapped=1;
+      while (swapped)
+      {
+          swapped=0;
+          for (jj=1; jj<npt; jj++)
+          {
+              if (charge[jj] < charge[jj-1])
+              //if (distance[jj] < distance[jj-1])
+              {
+                  tmp=charge[jj];
+                  charge[jj]=charge[jj-1];
+                  charge[jj-1]=tmp;
+
+                  tmp=distance[jj];
+                  distance[jj]=distance[jj-1];
+                  distance[jj-1]=tmp;
+
+                  swapped=1;
+              }
+          }
+      }
+  }
+
+  return adcfrac;
+
+}
+
